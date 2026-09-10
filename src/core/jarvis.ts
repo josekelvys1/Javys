@@ -1,0 +1,140 @@
+import Anthropic from "@anthropic-ai/sdk";
+import { config } from "../config/index.js";
+import { logger } from "../utils/logger.js";
+import { formatDateTime, now } from "../utils/time.js";
+import { listUpcomingAppointments } from "../modules/agenda/appointments.js";
+import { listPendingReminders } from "../modules/agenda/reminders.js";
+import { getAwaitingActions, resolvePendingAction } from "./confirmations.js";
+import { buildSystemPrompt } from "./systemPrompt.js";
+import { executeConfirmedAction, executeTool, tools } from "./tools.js";
+
+const client = new Anthropic();
+
+const MAX_HISTORY_MESSAGES = 30;
+const MAX_TOOL_ITERATIONS = 6;
+const history: Anthropic.MessageParam[] = [];
+
+const YES_RE = /^(sim|s|ok|confirmo|confirmado|confirma|pode mandar|manda|pode enviar|isso mesmo|correto)[.!]?$/i;
+const NO_RE = /^(não|nao|n|cancela|cancelar|para|pera|perai|peraí|espera|deixa)[.!]?$/i;
+
+function buildContextBlock(): string {
+  const nowStr = now().format("dddd, DD/MM/YYYY HH:mm");
+  const reminders =
+    listPendingReminders()
+      .slice(0, 5)
+      .map((r) => `- ${r.text} (${formatDateTime(r.dueAt)})`)
+      .join("\n") || "Nenhum.";
+  const appointments =
+    listUpcomingAppointments(new Date().toISOString())
+      .slice(0, 5)
+      .map((a) => `- ${a.title} (${formatDateTime(a.startAt)})`)
+      .join("\n") || "Nenhum.";
+  const pending =
+    getAwaitingActions()
+      .slice(0, 5)
+      .map((a) => `- [${a.id}] ${a.description}`)
+      .join("\n") || "Nenhuma.";
+
+  return `CONTEXTO ATUAL (uso interno, não repita isso cru para o Dono)
+Agora: ${nowStr} (${config.timezone})
+Próximos lembretes:
+${reminders}
+Próximos compromissos:
+${appointments}
+Ações aguardando confirmação:
+${pending}`;
+}
+
+function pushHistory(entry: Anthropic.MessageParam): void {
+  history.push(entry);
+  if (history.length > MAX_HISTORY_MESSAGES) {
+    history.splice(0, history.length - MAX_HISTORY_MESSAGES);
+  }
+}
+
+async function runAgentTurn(userText: string): Promise<string> {
+  pushHistory({ role: "user", content: userText });
+
+  const system: Anthropic.TextBlockParam[] = [
+    { type: "text", text: buildSystemPrompt(), cache_control: { type: "ephemeral" } },
+    { type: "text", text: buildContextBlock() },
+  ];
+
+  let finalText = "";
+
+  for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
+    const response = await client.messages.create({
+      model: config.model,
+      max_tokens: 4096,
+      system,
+      tools,
+      messages: history,
+      output_config: { effort: config.effort },
+    });
+
+    pushHistory({ role: "assistant", content: response.content });
+
+    if (response.stop_reason === "pause_turn") {
+      continue;
+    }
+
+    const textBlocks = response.content.filter(
+      (b): b is Anthropic.TextBlock => b.type === "text",
+    );
+    if (textBlocks.length) finalText = textBlocks.map((b) => b.text).join("\n");
+
+    const toolUses = response.content.filter(
+      (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
+    );
+    if (toolUses.length === 0) break;
+
+    const toolResults: Anthropic.ToolResultBlockParam[] = [];
+    for (const use of toolUses) {
+      try {
+        const result = await executeTool(use.name, use.input);
+        toolResults.push({ type: "tool_result", tool_use_id: use.id, content: result });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: use.id,
+          content: message,
+          is_error: true,
+        });
+      }
+    }
+    pushHistory({ role: "user", content: toolResults });
+  }
+
+  return finalText || "Feito.";
+}
+
+export async function handleOwnerMessage(text: string): Promise<string> {
+  const trimmed = text.trim();
+  const awaiting = getAwaitingActions();
+
+  // Fast path: exactly one pending confirmation and a clear yes/no reply -
+  // resolve deterministically without a model round-trip.
+  if (awaiting.length === 1) {
+    if (YES_RE.test(trimmed)) {
+      const result = await executeConfirmedAction(awaiting[0].id);
+      pushHistory({ role: "user", content: trimmed });
+      pushHistory({ role: "assistant", content: result });
+      return result;
+    }
+    if (NO_RE.test(trimmed)) {
+      await resolvePendingAction(awaiting[0].id, "cancelled");
+      const result = "Ok, cancelado.";
+      pushHistory({ role: "user", content: trimmed });
+      pushHistory({ role: "assistant", content: result });
+      return result;
+    }
+  }
+
+  try {
+    return await runAgentTurn(trimmed);
+  } catch (err) {
+    logger.error(err, "Erro ao processar mensagem com Claude.");
+    return "Deu um erro aqui do meu lado processando isso. Tenta de novo?";
+  }
+}
