@@ -5,6 +5,7 @@ import {
   fetchLatestBaileysVersion,
   jidDecode,
   makeWASocket,
+  normalizeMessageContent,
   useMultiFileAuthState,
 } from "@whiskeysockets/baileys";
 import type { Boom } from "@hapi/boom";
@@ -102,18 +103,48 @@ export async function startWhatsApp(onMessage: IncomingHandler): Promise<void> {
   });
 
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
-    if (type !== "notify") return;
+    // Log cru de todo evento que chega, antes de qualquer filtro — se isso
+    // não aparecer no log ao mandar uma mensagem de teste, o problema está
+    // na conexão/entrega (fora deste arquivo), não no filtro abaixo.
+    logger.info(
+      { type, count: messages.length },
+      "Evento messages.upsert recebido.",
+    );
+
+    if (type !== "notify") {
+      logger.info({ type }, "Evento ignorado: type diferente de 'notify'.");
+      return;
+    }
+
     for (const msg of messages) {
-      if (!msg.message || msg.key.fromMe) continue;
       const jid = msg.key.remoteJid;
-      if (!jid || jid.endsWith("@g.us") || jid === "status@broadcast") continue;
+      const content = normalizeMessageContent(msg.message);
+
+      if (!content) {
+        logger.info(
+          { jid, fromMe: msg.key.fromMe },
+          "Evento ignorado: mensagem sem conteúdo suportado (ex: notificação de sistema, reação).",
+        );
+        continue;
+      }
+      if (msg.key.fromMe) {
+        logger.info({ jid }, "Evento ignorado: mensagem enviada pelo próprio Jarvis (fromMe).");
+        continue;
+      }
+      if (!jid || jid.endsWith("@g.us") || jid === "status@broadcast") {
+        logger.info({ jid }, "Evento ignorado: grupo ou status, não é conversa individual.");
+        continue;
+      }
 
       const text =
-        msg.message.conversation ??
-        msg.message.extendedTextMessage?.text ??
-        msg.message.imageMessage?.caption ??
-        msg.message.videoMessage?.caption;
-      if (!text) continue;
+        content.conversation ??
+        content.extendedTextMessage?.text ??
+        content.imageMessage?.caption ??
+        content.videoMessage?.caption;
+      if (!text) {
+        logger.info({ jid }, "Evento ignorado: mensagem sem texto (ex: figurinha, áudio, imagem sem legenda).");
+        continue;
+      }
 
       const jidAlt = msg.key.remoteJidAlt;
       const owner = isOwnerMessage(jid, jidAlt);
