@@ -6,11 +6,8 @@ import { sendToOwner, startWhatsApp } from "./whatsapp/connection.js";
 async function main(): Promise<void> {
   logger.info("Iniciando o Jarvis...");
 
-  await startWhatsApp(async (jid, text, isOwner) => {
-    if (!isOwner) {
-      logger.debug({ jid }, "Mensagem ignorada (não é do Dono).");
-      return;
-    }
+  await startWhatsApp(async (_jid, text, isOwner) => {
+    if (!isOwner) return;
     logger.info({ text }, "Mensagem recebida do Dono.");
     const reply = await handleOwnerMessage(text);
     await sendToOwner(reply);

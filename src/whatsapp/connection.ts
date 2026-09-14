@@ -3,6 +3,7 @@ import {
   DisconnectReason,
   type WASocket,
   fetchLatestBaileysVersion,
+  jidDecode,
   makeWASocket,
   useMultiFileAuthState,
 } from "@whiskeysockets/baileys";
@@ -21,8 +22,35 @@ export function ownerJid(): string {
   return `${config.ownerNumber}@s.whatsapp.net`;
 }
 
-export function isOwnerJid(jid: string): boolean {
-  return jid === ownerJid();
+// Números de celular brasileiros às vezes aparecem no JID com ou sem o 9º
+// dígito, dependendo de como a conta foi registrada — aceitamos as duas formas.
+function phoneVariants(number: string): string[] {
+  const variants = new Set([number]);
+  if (number.startsWith("55")) {
+    const ddd = number.slice(2, 4);
+    const rest = number.slice(4);
+    if (rest.length === 9 && rest.startsWith("9")) variants.add(`55${ddd}${rest.slice(1)}`);
+    if (rest.length === 8) variants.add(`55${ddd}9${rest}`);
+  }
+  return [...variants];
+}
+
+const ownerNumberVariants = new Set(phoneVariants(config.ownerNumber));
+
+// Desde a v7, o Baileys pode endereçar uma conversa por LID (um id opaco,
+// não o número de telefone) em vez do JID tradicional baseado em número.
+// Quando isso acontece, o JID "de verdade" vem em `remoteJidAlt`. Por isso
+// checamos tanto o jid principal quanto o alternativo antes de descartar
+// uma mensagem como "não é do Dono".
+function isOwnerNumberJid(jid: string | undefined): boolean {
+  if (!jid) return false;
+  const decoded = jidDecode(jid);
+  if (!decoded || decoded.server !== "s.whatsapp.net") return false;
+  return ownerNumberVariants.has(decoded.user);
+}
+
+export function isOwnerMessage(jid: string, jidAlt?: string): boolean {
+  return isOwnerNumberJid(jid) || isOwnerNumberJid(jidAlt);
 }
 
 export async function sendText(jid: string, text: string): Promise<void> {
@@ -87,8 +115,14 @@ export async function startWhatsApp(onMessage: IncomingHandler): Promise<void> {
         msg.message.videoMessage?.caption;
       if (!text) continue;
 
+      const jidAlt = msg.key.remoteJidAlt;
+      const owner = isOwnerMessage(jid, jidAlt);
+      if (!owner) {
+        logger.info({ jid, jidAlt }, "Mensagem ignorada: remetente não é o Dono configurado.");
+      }
+
       try {
-        await onMessage(jid, text, isOwnerJid(jid));
+        await onMessage(jid, text, owner);
       } catch (err) {
         logger.error(err, "Erro ao processar mensagem recebida.");
       }
