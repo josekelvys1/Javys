@@ -44,6 +44,10 @@ npm run build
 npm start
 ```
 
+## Atualizar depois de uma mudança no código (Windows)
+
+Depois que o Jarvis já estiver rodando 24h via PM2 (veja o passo a passo que te passei), toda vez que houver uma atualização de código é só dar duplo clique em `atualizar-jarvis.bat`, na raiz do projeto. Ele faz `git pull` + `npm install` + `npm run build` + reinicia o processo `Javys` no PM2 (ou cria o processo, se for a primeira vez), tudo em sequência, e para com uma mensagem clara se algum passo falhar.
+
 ## O que já dá pra fazer
 
 - Conversar com o Jarvis pelo WhatsApp (só o Dono).
