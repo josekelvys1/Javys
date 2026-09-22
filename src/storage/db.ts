@@ -1,7 +1,8 @@
-import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { JSONFilePreset } from "lowdb/node";
 import { config } from "../config/index.js";
+
+export { newId } from "./id.js";
 
 export interface Reminder {
   id: string;
@@ -137,7 +138,3 @@ for (const key of Object.keys(defaultData) as (keyof DbSchema)[]) {
   }
 }
 if (migrated) await db.write();
-
-export function newId(): string {
-  return randomUUID().slice(0, 8);
-}

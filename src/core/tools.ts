@@ -40,6 +40,19 @@ import {
   listOpenTasks,
   recordProgress,
 } from "../modules/productivity/tasks.js";
+import {
+  createCategory,
+  listCategories,
+  resolveOrCreateCategory,
+} from "../modules/finance/categories.js";
+import { listBudgets, setBudget } from "../modules/finance/budgets.js";
+import {
+  createTransaction,
+  getCategoryHistory,
+  getFinancialSummary,
+  listTransactions,
+  updateTransactionCategory,
+} from "../modules/finance/transactions.js";
 import { sendText } from "../whatsapp/connection.js";
 import { formatDateTime, now, parseLocalDateTime } from "../utils/time.js";
 import {
@@ -395,6 +408,101 @@ export const tools: Anthropic.Tool[] = [
     description: "Consulta se o modo foco está ativo agora e até quando.",
     input_schema: { type: "object", properties: {}, required: [] },
   },
+  {
+    name: "log_transaction",
+    description:
+      'Registra uma transação financeira (entrada ou saída) que o Dono relatou, ex: "gastei 25 no lanche" ou "recebi 3000 de salário". Escolha a categoria (veja categorias existentes antes de inventar uma nova) e o tipo. Ação de rotina, não precisa de confirmação.',
+    input_schema: {
+      type: "object",
+      properties: {
+        type: { type: "string", enum: ["income", "expense"] },
+        amount: { type: "number", description: "Valor sempre positivo." },
+        description: { type: "string" },
+        category: {
+          type: "string",
+          description: "Nome de uma categoria existente (prefira reaproveitar) ou uma nova, se nenhuma existente fizer sentido.",
+        },
+        date: {
+          type: "string",
+          description: "Data/hora local YYYY-MM-DDTHH:mm. Se o Dono não especificar, use agora.",
+        },
+      },
+      required: ["type", "amount", "description", "category"],
+    },
+  },
+  {
+    name: "list_transactions",
+    description: "Lista transações registradas num período, opcionalmente filtradas por categoria e/ou tipo.",
+    input_schema: {
+      type: "object",
+      properties: {
+        period: { type: "string", enum: ["today", "week", "month", "all"] },
+        category: { type: "string" },
+        type: { type: "string", enum: ["income", "expense"] },
+      },
+      required: ["period"],
+    },
+  },
+  {
+    name: "update_transaction_category",
+    description: "Corrige a categoria de uma transação já registrada, pelo id.",
+    input_schema: {
+      type: "object",
+      properties: { id: { type: "string" }, category: { type: "string" } },
+      required: ["id", "category"],
+    },
+  },
+  {
+    name: "get_financial_summary",
+    description:
+      "Retorna total de entradas, saídas, saldo e detalhamento por categoria de gastos num período. Para 'month' inclui uma projeção simples de gasto total do mês com base no ritmo atual. Use antes de responder qualquer pergunta sobre quanto o Dono gastou/ganhou.",
+    input_schema: {
+      type: "object",
+      properties: { period: { type: "string", enum: ["today", "week", "month", "all"] } },
+      required: ["period"],
+    },
+  },
+  {
+    name: "get_category_history",
+    description:
+      "Retorna o total gasto por categoria em cada um dos últimos N meses (padrão 6). Use para identificar tendências, categoria que mais cresceu, ou embasar conselhos financeiros.",
+    input_schema: {
+      type: "object",
+      properties: { months: { type: "integer" } },
+      required: [],
+    },
+  },
+  {
+    name: "list_categories",
+    description: "Lista as categorias financeiras existentes (padrão + criadas pelo Dono).",
+    input_schema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "create_category",
+    description: "Cria uma nova categoria financeira explicitamente pedida pelo Dono, sem lançar uma transação ainda.",
+    input_schema: {
+      type: "object",
+      properties: { name: { type: "string" } },
+      required: ["name"],
+    },
+  },
+  {
+    name: "set_budget",
+    description: 'Define ou atualiza a meta mensal de gasto de uma categoria, ex: "quero gastar no máximo 300 com lanche por mês".',
+    input_schema: {
+      type: "object",
+      properties: {
+        category: { type: "string" },
+        monthly_limit: { type: "number" },
+      },
+      required: ["category", "monthly_limit"],
+    },
+  },
+  {
+    name: "list_budgets",
+    description: "Lista as metas de gasto mensal configuradas por categoria.",
+    input_schema: { type: "object", properties: {}, required: [] },
+  },
 ];
 
 export async function executeConfirmedAction(actionId: string): Promise<string> {
@@ -635,6 +743,85 @@ export async function executeTool(name: string, input: any): Promise<string> {
       return focus.active && focus.endsAt
         ? `Modo foco ativo até ${formatDateTime(focus.endsAt)}.`
         : "Modo foco inativo.";
+    }
+    case "log_transaction": {
+      const date = input.date ? parseLocalDateTime(input.date) : now().toISOString();
+      const category = await resolveOrCreateCategory(input.category);
+      const { transaction, budgetAlert, anomalyAlert } = await createTransaction({
+        type: input.type,
+        amount: input.amount,
+        description: input.description,
+        category: category.name,
+        date,
+      });
+      const lines = [
+        `Transação registrada (id: ${transaction.id}): ${transaction.type === "income" ? "+" : "-"}R$${transaction.amount.toFixed(2)} — ${transaction.description} [${transaction.category}], ${formatDateTime(transaction.date)}.`,
+      ];
+      if (budgetAlert) lines.push(budgetAlert);
+      if (anomalyAlert) lines.push(anomalyAlert);
+      return lines.join("\n");
+    }
+    case "list_transactions": {
+      const transactions = listTransactions(input.period, {
+        category: input.category,
+        type: input.type,
+      });
+      if (transactions.length === 0) return "Nenhuma transação encontrada nesse período.";
+      return transactions
+        .map(
+          (t) =>
+            `- [${t.id}] ${t.type === "income" ? "+" : "-"}R$${t.amount.toFixed(2)} ${t.description} [${t.category}] (${formatDateTime(t.date)})`,
+        )
+        .join("\n");
+    }
+    case "update_transaction_category": {
+      const category = await resolveOrCreateCategory(input.category);
+      const ok = await updateTransactionCategory(input.id, category.name);
+      return ok ? `Categoria atualizada para ${category.name}.` : "Não encontrei essa transação.";
+    }
+    case "get_financial_summary": {
+      const summary = getFinancialSummary(input.period);
+      const lines = [
+        `Entradas: R$${summary.totalIncome.toFixed(2)}`,
+        `Saídas: R$${summary.totalExpense.toFixed(2)}`,
+        `Saldo: R$${summary.balance.toFixed(2)}`,
+      ];
+      if (summary.projectedExpense !== undefined) {
+        lines.push(`Projeção de gasto do mês (no ritmo atual): R$${summary.projectedExpense.toFixed(2)}`);
+      }
+      if (summary.byCategory.length > 0) {
+        lines.push("Por categoria:");
+        for (const c of summary.byCategory) {
+          lines.push(`- ${c.category}: R$${c.total.toFixed(2)} (${c.count} lançamento(s))`);
+        }
+      }
+      return lines.join("\n");
+    }
+    case "get_category_history": {
+      const history = getCategoryHistory(input.months);
+      return history
+        .map((m) => {
+          const byCategory = m.byCategory.map((c) => `${c.category}: R$${c.total.toFixed(2)}`).join(", ");
+          return `${m.month}: ${byCategory || "sem gastos"}`;
+        })
+        .join("\n");
+    }
+    case "list_categories": {
+      const categories = listCategories();
+      return categories.map((c) => `- ${c.name}`).join("\n");
+    }
+    case "create_category": {
+      const category = await createCategory(input.name);
+      return `Categoria "${category.name}" pronta pra uso.`;
+    }
+    case "set_budget": {
+      const budget = await setBudget(input.category, input.monthly_limit);
+      return `Meta definida: até R$${budget.monthlyLimit.toFixed(2)}/mês em ${budget.category}.`;
+    }
+    case "list_budgets": {
+      const budgets = listBudgets();
+      if (budgets.length === 0) return "Nenhuma meta configurada.";
+      return budgets.map((b) => `- ${b.category}: até R$${b.monthlyLimit.toFixed(2)}/mês`).join("\n");
     }
     default:
       throw new Error(`Ferramenta desconhecida: ${name}`);
