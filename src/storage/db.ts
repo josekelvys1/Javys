@@ -71,6 +71,32 @@ export interface WorkoutSession {
   createdAt: string;
 }
 
+export interface DailyChecklist {
+  id: string;
+  date: string;
+  sentAt: string;
+  status: "sent" | "answered";
+  response?: string;
+  respondedAt?: string;
+}
+
+export interface Task {
+  id: string;
+  title: string;
+  dueAt: string;
+  createdAt: string;
+  status: "open" | "done" | "cancelled";
+  lastNudgeAt?: string;
+  lastProgressNote?: string;
+  lastProgressAt?: string;
+}
+
+export interface FocusMode {
+  active: boolean;
+  startedAt?: string;
+  endsAt?: string;
+}
+
 interface DbSchema {
   reminders: Reminder[];
   appointments: Appointment[];
@@ -78,6 +104,9 @@ interface DbSchema {
   habits: Habit[];
   habitCheckIns: HabitCheckIn[];
   workouts: WorkoutSession[];
+  dailyChecklists: DailyChecklist[];
+  tasks: Task[];
+  focusMode: FocusMode;
 }
 
 const defaultData: DbSchema = {
@@ -87,6 +116,9 @@ const defaultData: DbSchema = {
   habits: [],
   habitCheckIns: [],
   workouts: [],
+  dailyChecklists: [],
+  tasks: [],
+  focusMode: { active: false },
 };
 
 const dbFile = path.join(config.dataDir, "jarvis-db.json");

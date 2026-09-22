@@ -14,6 +14,7 @@ export const config = {
   ownerNumber: required("OWNER_WHATSAPP_NUMBER").replace(/\D/g, ""),
   timezone: process.env.TIMEZONE || "America/Sao_Paulo",
   morningBriefingTime: process.env.MORNING_BRIEFING_TIME || "07:00",
+  eveningChecklistTime: process.env.EVENING_CHECKLIST_TIME || "21:00",
   reminderCheckIntervalMs: Number(process.env.REMINDER_CHECK_INTERVAL_MS || 30000),
   habitCheckIntervalMs: Number(process.env.HABIT_CHECK_INTERVAL_MS || 60000),
   model: process.env.JARVIS_MODEL || "claude-opus-5",

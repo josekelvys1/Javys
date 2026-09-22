@@ -1,5 +1,6 @@
 import cron from "node-cron";
 import { config } from "../../config/index.js";
+import { isFocusModeActive } from "../productivity/focusMode.js";
 import { logger } from "../../utils/logger.js";
 import { formatDateTime, now } from "../../utils/time.js";
 import { sendToOwner } from "../../whatsapp/connection.js";
@@ -9,6 +10,7 @@ import { listDueReminders, markReminderSent } from "./reminders.js";
 export function startReminderLoop(): void {
   setInterval(async () => {
     try {
+      if (isFocusModeActive()) return;
       const due = listDueReminders(new Date().toISOString());
       for (const reminder of due) {
         await sendToOwner(`⏰ Lembrete: ${reminder.text}`);
@@ -28,6 +30,7 @@ export function startMorningBriefing(): void {
     cronExpr,
     async () => {
       try {
+        if (isFocusModeActive()) return;
         const today = now().format("YYYY-MM-DD");
         const appointments = listAppointmentsForDay(today);
         const lines = [`☀️ Bom dia! Aqui está o seu briefing de ${now().format("DD/MM")}:`];

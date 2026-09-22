@@ -23,6 +23,23 @@ import {
   getExerciseHistory,
   listWorkoutSessions,
 } from "../modules/workouts/workouts.js";
+import {
+  getAwaitingChecklist,
+  listChecklistHistory,
+  recordChecklistResponse,
+} from "../modules/productivity/checklist.js";
+import {
+  activateFocusMode,
+  deactivateFocusMode,
+  getFocusMode,
+} from "../modules/productivity/focusMode.js";
+import {
+  cancelTask,
+  completeTask,
+  createTask,
+  listOpenTasks,
+  recordProgress,
+} from "../modules/productivity/tasks.js";
 import { sendText } from "../whatsapp/connection.js";
 import { formatDateTime, now, parseLocalDateTime } from "../utils/time.js";
 import {
@@ -291,6 +308,93 @@ export const tools: Anthropic.Tool[] = [
       required: ["exercise_name"],
     },
   },
+  {
+    name: "record_daily_checklist",
+    description:
+      "Registra a resposta do Dono ao checklist de fechamento do dia (o que fez, o que ficou pra trás, como foi a energia). Use SOMENTE quando houver um checklist aguardando resposta hoje (ver contexto) e a mensagem do Dono for claramente essa reflexão sobre o dia, não um comando qualquer.",
+    input_schema: {
+      type: "object",
+      properties: { response: { type: "string", description: "Resposta do Dono, como ele escreveu." } },
+      required: ["response"],
+    },
+  },
+  {
+    name: "list_daily_checklists",
+    description: "Lista o histórico recente de checklists de fechamento do dia (respondidos ou não).",
+    input_schema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "create_task",
+    description:
+      'Cria uma tarefa com prazo para o Dono, ex: "preciso terminar o relatório até sexta". Converta o prazo mencionado para data/hora concreta. Ação de rotina, não precisa de confirmação.',
+    input_schema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        due_at: {
+          type: "string",
+          description: "Data/hora local do prazo, YYYY-MM-DDTHH:mm, no fuso do Dono",
+        },
+      },
+      required: ["title", "due_at"],
+    },
+  },
+  {
+    name: "list_tasks",
+    description: "Lista as tarefas abertas do Dono, ordenadas por prazo.",
+    input_schema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "complete_task",
+    description: "Marca uma tarefa como concluída pelo id.",
+    input_schema: {
+      type: "object",
+      properties: { id: { type: "string" } },
+      required: ["id"],
+    },
+  },
+  {
+    name: "cancel_task",
+    description: "Cancela uma tarefa pelo id.",
+    input_schema: {
+      type: "object",
+      properties: { id: { type: "string" } },
+      required: ["id"],
+    },
+  },
+  {
+    name: "update_task_progress",
+    description:
+      "Registra uma nota de andamento de uma tarefa, seja porque o Dono respondeu a uma cobrança ou avisou espontaneamente como está indo.",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        note: { type: "string", description: "Resumo do andamento, ex: 'já fiz metade, falta a revisão'." },
+      },
+      required: ["id", "note"],
+    },
+  },
+  {
+    name: "activate_focus_mode",
+    description:
+      'Ativa o modo foco por um período, silenciando lembretes/hábitos/briefings/cobranças automáticas até o fim (o Dono ainda pode conversar normalmente). Ex: "ativa modo foco por 2 horas" -> duration_minutes: 120.',
+    input_schema: {
+      type: "object",
+      properties: { duration_minutes: { type: "integer" } },
+      required: ["duration_minutes"],
+    },
+  },
+  {
+    name: "deactivate_focus_mode",
+    description: "Encerra o modo foco antes do prazo, se o Dono pedir.",
+    input_schema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "get_focus_status",
+    description: "Consulta se o modo foco está ativo agora e até quando.",
+    input_schema: { type: "object", properties: {}, required: [] },
+  },
 ];
 
 export async function executeConfirmedAction(actionId: string): Promise<string> {
@@ -477,6 +581,60 @@ export async function executeTool(name: string, input: any): Promise<string> {
       const history = getExerciseHistory(input.exercise_name);
       if (history.length === 0) return "Nenhum registro encontrado para esse exercício.";
       return history.map((r) => `- ${formatDateTime(r.date)}: ${describeExercise(r.exercise)}`).join("\n");
+    }
+    case "record_daily_checklist": {
+      const awaiting = getAwaitingChecklist();
+      if (!awaiting) return "Não há checklist aguardando resposta hoje.";
+      await recordChecklistResponse(awaiting.id, input.response);
+      return "Registrado! Bom descanso. 🌙";
+    }
+    case "list_daily_checklists": {
+      const history = listChecklistHistory();
+      if (history.length === 0) return "Nenhum checklist registrado ainda.";
+      return history
+        .map((c) => `- ${formatDateTime(c.sentAt)}: ${c.status === "answered" ? c.response : "(sem resposta)"}`)
+        .join("\n");
+    }
+    case "create_task": {
+      const dueAt = parseLocalDateTime(input.due_at);
+      const task = await createTask(input.title, dueAt);
+      return `Tarefa criada (id: ${task.id}): ${task.title}, prazo ${formatDateTime(dueAt)}.`;
+    }
+    case "list_tasks": {
+      const tasks = listOpenTasks();
+      if (tasks.length === 0) return "Nenhuma tarefa aberta.";
+      return tasks
+        .map(
+          (t) =>
+            `- [${t.id}] ${t.title} (prazo: ${formatDateTime(t.dueAt)})${t.lastProgressNote ? ` — último andamento: ${t.lastProgressNote}` : ""}`,
+        )
+        .join("\n");
+    }
+    case "complete_task": {
+      const ok = await completeTask(input.id);
+      return ok ? "Tarefa concluída! 🎉" : "Não encontrei essa tarefa.";
+    }
+    case "cancel_task": {
+      const ok = await cancelTask(input.id);
+      return ok ? "Tarefa cancelada." : "Não encontrei essa tarefa.";
+    }
+    case "update_task_progress": {
+      const ok = await recordProgress(input.id, input.note);
+      return ok ? "Andamento registrado." : "Não encontrei essa tarefa.";
+    }
+    case "activate_focus_mode": {
+      const focus = await activateFocusMode(input.duration_minutes);
+      return `Modo foco ativado até ${formatDateTime(focus.endsAt!)}. Só te procuro se você me chamar.`;
+    }
+    case "deactivate_focus_mode": {
+      await deactivateFocusMode();
+      return "Modo foco desativado.";
+    }
+    case "get_focus_status": {
+      const focus = getFocusMode();
+      return focus.active && focus.endsAt
+        ? `Modo foco ativo até ${formatDateTime(focus.endsAt)}.`
+        : "Modo foco inativo.";
     }
     default:
       throw new Error(`Ferramenta desconhecida: ${name}`);

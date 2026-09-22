@@ -1,4 +1,5 @@
 import { config } from "../../config/index.js";
+import { isFocusModeActive } from "../productivity/focusMode.js";
 import { logger } from "../../utils/logger.js";
 import { sendToOwner } from "../../whatsapp/connection.js";
 import { createNotifiedCheckIn, getTodayCheckIns } from "./checkins.js";
@@ -8,6 +9,7 @@ import { listActiveHabits } from "./habits.js";
 export function startHabitReminderLoop(): void {
   setInterval(async () => {
     try {
+      if (isFocusModeActive()) return;
       const nowISO = new Date().toISOString();
       for (const habit of listActiveHabits()) {
         const todayCheckIns = getTodayCheckIns(habit.id);

@@ -6,6 +6,7 @@ import { listUpcomingAppointments } from "../modules/agenda/appointments.js";
 import { listPendingReminders } from "../modules/agenda/reminders.js";
 import { getAwaitingCheckIns, resolveCheckIn } from "../modules/habits/checkins.js";
 import { getHabit } from "../modules/habits/habits.js";
+import { getAwaitingChecklist } from "../modules/productivity/checklist.js";
 import { getAwaitingActions, resolvePendingAction } from "./confirmations.js";
 import { buildSystemPrompt } from "./systemPrompt.js";
 import { executeConfirmedAction, executeTool, tools } from "./tools.js";
@@ -53,6 +54,9 @@ function buildContextBlock(): string {
       .slice(0, 5)
       .map((c) => `- [${c.id}] ${getHabit(c.habitId)?.name ?? "hábito desconhecido"}`)
       .join("\n") || "Nenhum.";
+  const checklist = getAwaitingChecklist()
+    ? "Aguardando resposta (se a próxima mensagem do Dono parecer uma reflexão sobre o dia, chame record_daily_checklist)."
+    : "Nenhum aguardando hoje.";
 
   return `CONTEXTO ATUAL (uso interno, não repita isso cru para o Dono)
 Agora: ${nowStr} (${config.timezone})
@@ -63,7 +67,9 @@ ${appointments}
 Ações aguardando confirmação:
 ${pending}
 Hábitos aguardando check-in (fiz/não fiz):
-${awaitingCheckIns}`;
+${awaitingCheckIns}
+Checklist de fechamento do dia:
+${checklist}`;
 }
 
 function pushHistory(entry: Anthropic.MessageParam): void {
