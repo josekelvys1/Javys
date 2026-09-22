@@ -17,8 +17,14 @@ import {
 } from "../modules/habits/checkins.js";
 import { describeFrequency } from "../modules/habits/frequency.js";
 import { archiveHabit, createHabit, listActiveHabits } from "../modules/habits/habits.js";
+import {
+  createWorkoutSession,
+  describeExercise,
+  getExerciseHistory,
+  listWorkoutSessions,
+} from "../modules/workouts/workouts.js";
 import { sendText } from "../whatsapp/connection.js";
-import { formatDateTime, parseLocalDateTime } from "../utils/time.js";
+import { formatDateTime, now, parseLocalDateTime } from "../utils/time.js";
 import {
   createPendingAction,
   getAwaitingActions,
@@ -226,6 +232,65 @@ export const tools: Anthropic.Tool[] = [
       required: ["period"],
     },
   },
+  {
+    name: "log_workout",
+    description:
+      'Registra uma sessão de treino que o Dono já fez, com os exercícios (ex: "treinei peito hoje: supino 40kg 4x10, crucifixo 12kg 3x12"). Extraia nome, peso, séries e repetições de cada exercício da mensagem. Ação de rotina, não precisa de confirmação.',
+    input_schema: {
+      type: "object",
+      properties: {
+        date: {
+          type: "string",
+          description: "Data do treino, YYYY-MM-DD. Se o Dono não especificar, use a data de hoje.",
+        },
+        muscle_group: {
+          type: "string",
+          description: "Grupo muscular geral da sessão, ex: 'peito', 'costas', 'perna'. Opcional.",
+        },
+        exercises: {
+          type: "array",
+          description: "Exercícios feitos na sessão.",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              muscle_group: {
+                type: "string",
+                description: "Grupo muscular do exercício, se diferente do geral da sessão.",
+              },
+              weight_kg: { type: "number" },
+              sets: { type: "integer" },
+              reps: { type: "integer" },
+              notes: { type: "string" },
+            },
+            required: ["name"],
+          },
+        },
+      },
+      required: ["exercises"],
+    },
+  },
+  {
+    name: "list_workouts",
+    description: "Lista as sessões de treino registradas num período, para responder perguntas como 'o que treinei essa semana?'.",
+    input_schema: {
+      type: "object",
+      properties: {
+        period: { type: "string", enum: ["today", "week", "month", "all"] },
+      },
+      required: ["period"],
+    },
+  },
+  {
+    name: "get_exercise_history",
+    description:
+      "Retorna o histórico completo (data, peso, séries, repetições) de um exercício específico, do mais antigo pro mais recente. Use para responder 'qual foi minha última carga em X' (pegue o último item) ou 'como evoluiu meu X' (analise a lista inteira).",
+    input_schema: {
+      type: "object",
+      properties: { exercise_name: { type: "string" } },
+      required: ["exercise_name"],
+    },
+  },
 ];
 
 export async function executeConfirmedAction(actionId: string): Promise<string> {
@@ -379,6 +444,39 @@ export async function executeTool(name: string, input: any): Promise<string> {
       const progress = getProgress(input.period === "week" ? "week" : "day");
       if (progress.length === 0) return "Nenhum hábito ativo.";
       return progress.map((p) => `- ${p.habit.name}: ${p.done}/${p.expected}`).join("\n");
+    }
+    case "log_workout": {
+      const date = input.date ? parseLocalDateTime(`${input.date}T12:00`) : now().toISOString();
+      const exercises = (input.exercises as any[]).map((e) => ({
+        name: e.name,
+        muscleGroup: e.muscle_group,
+        weightKg: e.weight_kg,
+        sets: e.sets,
+        reps: e.reps,
+        notes: e.notes,
+      }));
+      const session = await createWorkoutSession({
+        date,
+        muscleGroup: input.muscle_group,
+        exercises,
+      });
+      return `Treino registrado (id: ${session.id}) em ${formatDateTime(date)}:\n${session.exercises.map((e) => `- ${describeExercise(e)}`).join("\n")}`;
+    }
+    case "list_workouts": {
+      const sessions = listWorkoutSessions(input.period);
+      if (sessions.length === 0) return "Nenhum treino registrado nesse período.";
+      return sessions
+        .map((s) => {
+          const header = `${formatDateTime(s.date)}${s.muscleGroup ? ` — ${s.muscleGroup}` : ""}`;
+          const lines = s.exercises.map((e) => `  - ${describeExercise(e)}`).join("\n");
+          return `${header}\n${lines}`;
+        })
+        .join("\n");
+    }
+    case "get_exercise_history": {
+      const history = getExerciseHistory(input.exercise_name);
+      if (history.length === 0) return "Nenhum registro encontrado para esse exercício.";
+      return history.map((r) => `- ${formatDateTime(r.date)}: ${describeExercise(r.exercise)}`).join("\n");
     }
     default:
       throw new Error(`Ferramenta desconhecida: ${name}`);

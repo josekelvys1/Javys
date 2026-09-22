@@ -53,12 +53,31 @@ export interface HabitCheckIn {
   respondedAt?: string;
 }
 
+export interface WorkoutExercise {
+  name: string;
+  muscleGroup?: string;
+  weightKg?: number;
+  sets?: number;
+  reps?: number;
+  notes?: string;
+}
+
+export interface WorkoutSession {
+  id: string;
+  date: string;
+  muscleGroup?: string;
+  exercises: WorkoutExercise[];
+  rawText?: string;
+  createdAt: string;
+}
+
 interface DbSchema {
   reminders: Reminder[];
   appointments: Appointment[];
   pendingActions: PendingAction[];
   habits: Habit[];
   habitCheckIns: HabitCheckIn[];
+  workouts: WorkoutSession[];
 }
 
 const defaultData: DbSchema = {
@@ -67,6 +86,7 @@ const defaultData: DbSchema = {
   pendingActions: [],
   habits: [],
   habitCheckIns: [],
+  workouts: [],
 };
 
 const dbFile = path.join(config.dataDir, "jarvis-db.json");
