@@ -1,6 +1,7 @@
 import { handleOwnerMessage } from "./core/jarvis.js";
 import { startReminderLoop, startMorningBriefing } from "./modules/agenda/scheduler.js";
 import { startHabitReminderLoop } from "./modules/habits/scheduler.js";
+import { startFinanceScheduler } from "./modules/finance/scheduler.js";
 import {
   startEveningChecklistLoop,
   startFocusModeWatcher,
@@ -24,6 +25,7 @@ async function main(): Promise<void> {
   startEveningChecklistLoop();
   startTaskNudgeLoop();
   startFocusModeWatcher();
+  startFinanceScheduler();
 
   logger.info("Jarvis pronto. Aguardando mensagens no WhatsApp.");
 }

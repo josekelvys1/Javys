@@ -45,7 +45,7 @@ import {
   listCategories,
   resolveOrCreateCategory,
 } from "../modules/finance/categories.js";
-import { listBudgets, setBudget } from "../modules/finance/budgets.js";
+import { getBudgetsStatus, listBudgets, setBudget } from "../modules/finance/budgets.js";
 import {
   createTransaction,
   getCategoryHistory,
@@ -53,8 +53,33 @@ import {
   listTransactions,
   updateTransactionCategory,
 } from "../modules/finance/transactions.js";
+import { getCurrentBalance, setReferenceBalance } from "../modules/finance/balance.js";
+import {
+  cancelReceivable,
+  createReceivable,
+  listReceivables,
+  markReceivableReceived,
+} from "../modules/finance/receivables.js";
+import {
+  cancelPayable,
+  createPayable,
+  listPayables,
+  markPayablePaid,
+} from "../modules/finance/payables.js";
+import {
+  createRecurringItem,
+  ensureCurrentMonthOccurrences,
+  listRecurringItems,
+  pauseRecurringItem,
+} from "../modules/finance/recurringItems.js";
+import {
+  contributeToSavingsGoal,
+  getSavingsGoalsProgress,
+  setSavingsGoal,
+} from "../modules/finance/savingsGoals.js";
+import { getCashFlowProjection, getFinancialSnapshot } from "../modules/finance/snapshot.js";
 import { sendText } from "../whatsapp/connection.js";
-import { formatDateTime, now, parseLocalDateTime } from "../utils/time.js";
+import { formatDateTime, fromISO, now, parseLocalDateTime } from "../utils/time.js";
 import {
   createPendingAction,
   getAwaitingActions,
@@ -500,7 +525,164 @@ export const tools: Anthropic.Tool[] = [
   },
   {
     name: "list_budgets",
-    description: "Lista as metas de gasto mensal configuradas por categoria.",
+    description: "Lista as metas de gasto mensal configuradas por categoria, com o progresso do mês corrente.",
+    input_schema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "set_reference_balance",
+    description:
+      'Define o saldo de referência do Dono (ex: "meu saldo atual é 198,73"). A partir dessa data, o saldo real passa a ser esse valor + as transações registradas depois. Não conta como receita nos relatórios, só como ponto de partida.',
+    input_schema: {
+      type: "object",
+      properties: {
+        amount: { type: "number" },
+        as_of: {
+          type: "string",
+          description: "Data/hora local YYYY-MM-DDTHH:mm a partir de quando esse saldo vale. Se omitido, usa agora.",
+        },
+      },
+      required: ["amount"],
+    },
+  },
+  {
+    name: "get_current_balance",
+    description:
+      "Retorna o saldo REAL atual do Dono (saldo de referência + transações desde então). Use isso, não get_financial_summary, quando ele perguntar 'quanto eu tenho' ou 'qual meu saldo'.",
+    input_schema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "create_receivable",
+    description:
+      'Cadastra um valor que ainda vai entrar mas não entrou (salário, pagamento de cliente etc.), ex: "vou receber 3000 de salário dia 5". Se o Dono disser que é recorrente (todo mês), use recurring: true — nesse caso o Javis já cria a ocorrência deste mês e projeta os próximos automaticamente, sem precisar cadastrar de novo.',
+    input_schema: {
+      type: "object",
+      properties: {
+        description: { type: "string" },
+        amount: { type: "number" },
+        expected_date: { type: "string", description: "Data local YYYY-MM-DD (ou com hora) esperada." },
+        category: { type: "string" },
+        recurring: { type: "boolean", description: "true se repete todo mês (ex: salário)." },
+      },
+      required: ["description", "amount", "expected_date"],
+    },
+  },
+  {
+    name: "list_receivables",
+    description: "Lista contas a receber pendentes (ou por outro status, se especificado).",
+    input_schema: {
+      type: "object",
+      properties: { status: { type: "string", enum: ["pending", "received", "cancelled", "all"] } },
+      required: [],
+    },
+  },
+  {
+    name: "mark_receivable_received",
+    description: "Confirma que uma conta a receber caiu, movendo pra uma transação de entrada real.",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        amount: { type: "number", description: "Valor real recebido, se diferente do previsto." },
+        date: { type: "string", description: "Data/hora local do recebimento, se não for agora." },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "cancel_receivable",
+    description: "Cancela uma conta a receber pendente que não vai mais acontecer.",
+    input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+  },
+  {
+    name: "create_payable",
+    description:
+      'Cadastra uma conta a pagar (boleto, assinatura, parcela, dívida), ex: "tenho que pagar 150 de internet dia 10". Se for recorrente (todo mês), use recurring: true — o Javis já cria a ocorrência deste mês e projeta os próximos, além de avisar quando estiver perto do vencimento.',
+    input_schema: {
+      type: "object",
+      properties: {
+        description: { type: "string" },
+        amount: { type: "number" },
+        due_date: { type: "string", description: "Data local YYYY-MM-DD (ou com hora) de vencimento." },
+        category: { type: "string" },
+        recurring: { type: "boolean", description: "true se repete todo mês (ex: aluguel, assinatura)." },
+      },
+      required: ["description", "amount", "due_date"],
+    },
+  },
+  {
+    name: "list_payables",
+    description: "Lista contas a pagar pendentes (ou por outro status, se especificado), incluindo vencidas.",
+    input_schema: {
+      type: "object",
+      properties: { status: { type: "string", enum: ["pending", "paid", "cancelled", "all"] } },
+      required: [],
+    },
+  },
+  {
+    name: "mark_payable_paid",
+    description: "Confirma que uma conta a pagar foi paga, movendo pra uma transação de saída real.",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        amount: { type: "number", description: "Valor real pago, se diferente do previsto." },
+        date: { type: "string", description: "Data/hora local do pagamento, se não for agora." },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "cancel_payable",
+    description: "Cancela uma conta a pagar pendente que não vai mais acontecer.",
+    input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+  },
+  {
+    name: "list_recurring_items",
+    description: "Lista os lançamentos recorrentes ativos (aluguel, assinaturas, salário etc.).",
+    input_schema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "pause_recurring_item",
+    description: "Pausa um lançamento recorrente (ex: assinatura cancelada) — ele para de gerar novas ocorrências.",
+    input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+  },
+  {
+    name: "set_savings_goal",
+    description:
+      'Define uma meta de economia. kind "monthly" pra "quero economizar X por mês" (progresso = receita menos despesa do mês); kind "target" pra uma reserva a acumular no total, ex: reserva de emergência (progresso vai subindo conforme o Dono confirma contribuições).',
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        kind: { type: "string", enum: ["monthly", "target"] },
+        target_amount: { type: "number" },
+      },
+      required: ["name", "kind", "target_amount"],
+    },
+  },
+  {
+    name: "contribute_to_savings_goal",
+    description: 'Registra uma contribuição pra uma meta do tipo "target" (ex: reserva de emergência), ex: "guardei 200 pra reserva".',
+    input_schema: {
+      type: "object",
+      properties: { id: { type: "string" }, amount: { type: "number" } },
+      required: ["id", "amount"],
+    },
+  },
+  {
+    name: "get_cash_flow_projection",
+    description:
+      "Projeta o fluxo de caixa do mês corrente e (opcionalmente) dos próximos meses, considerando saldo atual, a receber, a pagar e recorrências. Use quando o Dono perguntar se vai sobrar ou faltar dinheiro.",
+    input_schema: {
+      type: "object",
+      properties: { months_ahead: { type: "integer", description: "Quantos meses futuros incluir além do corrente. Padrão 1." } },
+      required: [],
+    },
+  },
+  {
+    name: "get_financial_snapshot",
+    description:
+      'Monta um raio-x financeiro completo: saldo atual, resumo do mês, histórico de categorias (últimos 3 meses), contas a receber/pagar pendentes, progresso de metas de gasto e de economia. Use pra perguntas como "como estão minhas finanças" ou "faz um raio-x financeiro" — depois analise os dados retornados pra dar recomendações práticas, deixando claro que não é aconselhamento financeiro profissional.',
     input_schema: { type: "object", properties: {}, required: [] },
   },
 ];
@@ -819,9 +1001,137 @@ export async function executeTool(name: string, input: any): Promise<string> {
       return `Meta definida: até R$${budget.monthlyLimit.toFixed(2)}/mês em ${budget.category}.`;
     }
     case "list_budgets": {
-      const budgets = listBudgets();
-      if (budgets.length === 0) return "Nenhuma meta configurada.";
-      return budgets.map((b) => `- ${b.category}: até R$${b.monthlyLimit.toFixed(2)}/mês`).join("\n");
+      const statuses = getBudgetsStatus();
+      if (statuses.length === 0) return "Nenhuma meta configurada.";
+      return statuses
+        .map(
+          (b) =>
+            `- ${b.category}: R$${b.spent.toFixed(2)} de R$${b.monthlyLimit.toFixed(2)} (${b.pct.toFixed(0)}%)`,
+        )
+        .join("\n");
+    }
+    case "set_reference_balance": {
+      const asOf = input.as_of ? parseLocalDateTime(input.as_of) : undefined;
+      const reference = await setReferenceBalance(input.amount, asOf);
+      return `Saldo de referência definido: R$${reference.amount.toFixed(2)} a partir de ${formatDateTime(reference.asOf)}.`;
+    }
+    case "get_current_balance": {
+      const current = getCurrentBalance();
+      return `Saldo atual: R$${current.balance.toFixed(2)} (referência de R$${current.referenceAmount.toFixed(2)} em ${formatDateTime(current.asOf)} + transações desde então).`;
+    }
+    case "create_receivable": {
+      const category = input.category ? (await resolveOrCreateCategory(input.category)).name : undefined;
+      const expectedDate = parseLocalDateTime(
+        input.expected_date.length <= 10 ? `${input.expected_date}T12:00` : input.expected_date,
+      );
+      if (input.recurring) {
+        const dayOfMonth = fromISO(expectedDate).date();
+        const item = await createRecurringItem({
+          description: input.description,
+          amount: input.amount,
+          type: "income",
+          category,
+          dayOfMonth,
+        });
+        await ensureCurrentMonthOccurrences(new Date().toISOString());
+        return `Recebimento recorrente criado: ${item.description}, R$${item.amount.toFixed(2)} todo dia ${dayOfMonth}.`;
+      }
+      const receivable = await createReceivable({
+        description: input.description,
+        amount: input.amount,
+        expectedDate,
+        category,
+      });
+      return `Conta a receber criada (id: ${receivable.id}): ${receivable.description}, R$${receivable.amount.toFixed(2)} em ${formatDateTime(receivable.expectedDate)}.`;
+    }
+    case "list_receivables": {
+      const receivables = listReceivables(input.status ?? "pending");
+      if (receivables.length === 0) return "Nenhuma conta a receber nesse status.";
+      return receivables
+        .map((r) => `- [${r.id}] ${r.description}: R$${r.amount.toFixed(2)} em ${formatDateTime(r.expectedDate)} (${r.status})`)
+        .join("\n");
+    }
+    case "mark_receivable_received": {
+      const date = input.date ? parseLocalDateTime(input.date) : undefined;
+      const receivable = await markReceivableReceived(input.id, { amount: input.amount, date });
+      return receivable
+        ? `Recebimento confirmado: ${receivable.description}, R$${(input.amount ?? receivable.amount).toFixed(2)}.`
+        : "Não encontrei essa conta a receber pendente.";
+    }
+    case "cancel_receivable": {
+      const ok = await cancelReceivable(input.id);
+      return ok ? "Conta a receber cancelada." : "Não encontrei essa conta a receber pendente.";
+    }
+    case "create_payable": {
+      const category = input.category ? (await resolveOrCreateCategory(input.category)).name : undefined;
+      const dueDate = parseLocalDateTime(input.due_date.length <= 10 ? `${input.due_date}T12:00` : input.due_date);
+      if (input.recurring) {
+        const dayOfMonth = fromISO(dueDate).date();
+        const item = await createRecurringItem({
+          description: input.description,
+          amount: input.amount,
+          type: "expense",
+          category,
+          dayOfMonth,
+        });
+        await ensureCurrentMonthOccurrences(new Date().toISOString());
+        return `Conta recorrente criada: ${item.description}, R$${item.amount.toFixed(2)} todo dia ${dayOfMonth}.`;
+      }
+      const payable = await createPayable({
+        description: input.description,
+        amount: input.amount,
+        dueDate,
+        category,
+      });
+      return `Conta a pagar criada (id: ${payable.id}): ${payable.description}, R$${payable.amount.toFixed(2)} vencendo em ${formatDateTime(payable.dueDate)}.`;
+    }
+    case "list_payables": {
+      const payables = listPayables(input.status ?? "pending");
+      if (payables.length === 0) return "Nenhuma conta a pagar nesse status.";
+      return payables
+        .map((p) => `- [${p.id}] ${p.description}: R$${p.amount.toFixed(2)} vencendo em ${formatDateTime(p.dueDate)} (${p.status})`)
+        .join("\n");
+    }
+    case "mark_payable_paid": {
+      const date = input.date ? parseLocalDateTime(input.date) : undefined;
+      const payable = await markPayablePaid(input.id, { amount: input.amount, date });
+      return payable
+        ? `Pagamento confirmado: ${payable.description}, R$${(input.amount ?? payable.amount).toFixed(2)}.`
+        : "Não encontrei essa conta a pagar pendente.";
+    }
+    case "cancel_payable": {
+      const ok = await cancelPayable(input.id);
+      return ok ? "Conta a pagar cancelada." : "Não encontrei essa conta a pagar pendente.";
+    }
+    case "list_recurring_items": {
+      const items = listRecurringItems();
+      if (items.length === 0) return "Nenhum lançamento recorrente ativo.";
+      return items
+        .map((i) => `- [${i.id}] ${i.description}: ${i.type === "income" ? "+" : "-"}R$${i.amount.toFixed(2)} todo dia ${i.dayOfMonth}`)
+        .join("\n");
+    }
+    case "pause_recurring_item": {
+      const ok = await pauseRecurringItem(input.id);
+      return ok ? "Lançamento recorrente pausado." : "Não encontrei esse lançamento recorrente.";
+    }
+    case "set_savings_goal": {
+      const goal = await setSavingsGoal(input.name, input.kind, input.target_amount);
+      return `Meta "${goal.name}" definida: ${goal.kind === "monthly" ? "economizar" : "acumular"} R$${goal.targetAmount.toFixed(2)}${goal.kind === "monthly" ? "/mês" : ""}.`;
+    }
+    case "contribute_to_savings_goal": {
+      const goal = await contributeToSavingsGoal(input.id, input.amount);
+      return goal
+        ? `Contribuição registrada: ${goal.name} agora tem R$${goal.currentAmount.toFixed(2)} de R$${goal.targetAmount.toFixed(2)}.`
+        : "Não encontrei essa meta.";
+    }
+    case "get_cash_flow_projection": {
+      const projection = getCashFlowProjection(input.months_ahead ?? 1);
+      return projection
+        .map((p) => `- ${p.month}: +R$${p.projectedIncome.toFixed(2)} / -R$${p.projectedExpense.toFixed(2)} => saldo projetado R$${p.projectedBalance.toFixed(2)}`)
+        .join("\n");
+    }
+    case "get_financial_snapshot": {
+      return JSON.stringify(getFinancialSnapshot());
     }
     default:
       throw new Error(`Ferramenta desconhecida: ${name}`);

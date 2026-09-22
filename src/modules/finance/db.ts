@@ -33,10 +33,66 @@ export interface Budget {
   lastAlertedThreshold?: number;
 }
 
+export interface ReferenceBalance {
+  amount: number;
+  asOf: string;
+  updatedAt: string;
+}
+
+export interface Receivable {
+  id: string;
+  description: string;
+  amount: number;
+  expectedDate: string;
+  category?: string;
+  status: "pending" | "received" | "cancelled";
+  transactionId?: string;
+  recurringItemId?: string;
+  createdAt: string;
+}
+
+export interface Payable {
+  id: string;
+  description: string;
+  amount: number;
+  dueDate: string;
+  category?: string;
+  status: "pending" | "paid" | "cancelled";
+  transactionId?: string;
+  recurringItemId?: string;
+  lastReminderAt?: string;
+  createdAt: string;
+}
+
+export interface RecurringItem {
+  id: string;
+  description: string;
+  amount: number;
+  type: "income" | "expense";
+  category?: string;
+  dayOfMonth: number;
+  status: "active" | "paused";
+  createdAt: string;
+}
+
+export interface SavingsGoal {
+  id: string;
+  name: string;
+  kind: "monthly" | "target";
+  targetAmount: number;
+  currentAmount: number;
+  createdAt: string;
+}
+
 interface FinanceDbSchema {
   categories: Category[];
   transactions: Transaction[];
   budgets: Budget[];
+  referenceBalance: ReferenceBalance;
+  receivables: Receivable[];
+  payables: Payable[];
+  recurringItems: RecurringItem[];
+  savingsGoals: SavingsGoal[];
 }
 
 const DEFAULT_CATEGORIES = [
@@ -65,6 +121,11 @@ const defaultData: FinanceDbSchema = {
   categories: seedDefaultCategories(),
   transactions: [],
   budgets: [],
+  referenceBalance: { amount: 0, asOf: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  receivables: [],
+  payables: [],
+  recurringItems: [],
+  savingsGoals: [],
 };
 
 const financeDbFile = path.join(config.dataDir, "finance-db.json");

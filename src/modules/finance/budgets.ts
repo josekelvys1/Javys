@@ -31,6 +31,25 @@ export function listBudgets(): Budget[] {
   return financeDb.data.budgets;
 }
 
+export interface BudgetStatus {
+  category: string;
+  monthlyLimit: number;
+  spent: number;
+  pct: number;
+}
+
+export function getBudgetsStatus(nowISO: string = new Date().toISOString()): BudgetStatus[] {
+  return financeDb.data.budgets.map((b) => {
+    const spent = monthTotalForCategory(b.category, nowISO);
+    return {
+      category: b.category,
+      monthlyLimit: b.monthlyLimit,
+      spent,
+      pct: (spent / b.monthlyLimit) * 100,
+    };
+  });
+}
+
 function monthTotalForCategory(category: string, monthISO: string): number {
   const monthKey = fromISO(monthISO).format("YYYY-MM");
   return financeDb.data.transactions
