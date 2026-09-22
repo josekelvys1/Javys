@@ -2,6 +2,7 @@ import path from "node:path";
 import {
   DisconnectReason,
   type WASocket,
+  downloadMediaMessage,
   fetchLatestBaileysVersion,
   jidDecode,
   makeWASocket,
@@ -12,9 +13,24 @@ import type { Boom } from "@hapi/boom";
 import pino from "pino";
 import qrcode from "qrcode-terminal";
 import { config } from "../config/index.js";
+import { transcribeAudio } from "../core/transcription.js";
 import { logger } from "../utils/logger.js";
 
-export type IncomingHandler = (jid: string, text: string, isOwner: boolean) => Promise<void>;
+export type ImageMediaType = "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+const ALLOWED_IMAGE_MEDIA_TYPES = new Set<string>([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+]);
+
+export interface IncomingMessage {
+  jid: string;
+  text?: string;
+  image?: { base64: string; mediaType: ImageMediaType; caption?: string };
+}
+
+export type IncomingHandler = (msg: IncomingMessage) => Promise<void>;
 
 let sock: WASocket | undefined;
 const baileysLogger = pino({ level: "silent" });
@@ -155,24 +171,55 @@ export async function startWhatsApp(onMessage: IncomingHandler): Promise<void> {
         continue;
       }
 
-      const text =
-        content.conversation ??
-        content.extendedTextMessage?.text ??
-        content.imageMessage?.caption ??
-        content.videoMessage?.caption;
-      if (!text) {
-        logger.info({ jid }, "Evento ignorado: mensagem sem texto (ex: figurinha, áudio, imagem sem legenda).");
-        continue;
-      }
-
       const jidAlt = msg.key.remoteJidAlt;
       const owner = isOwnerMessage(jid, jidAlt);
       if (!owner) {
         logger.info({ jid, jidAlt }, "Mensagem ignorada: remetente não é o Dono configurado.");
+        continue;
       }
 
       try {
-        await onMessage(jid, text, owner);
+        if (content.audioMessage) {
+          const buffer = await downloadMediaMessage(msg, "buffer", {});
+          const transcript = await transcribeAudio(
+            buffer,
+            content.audioMessage.mimetype ?? "audio/ogg",
+          );
+          if (!transcript) {
+            await sendText(jid, "⚠️ Não consegui entender esse áudio. Pode repetir ou escrever?");
+            continue;
+          }
+          await onMessage({ jid, text: transcript });
+          continue;
+        }
+
+        if (content.imageMessage) {
+          const buffer = await downloadMediaMessage(msg, "buffer", {});
+          const rawMimeType = content.imageMessage.mimetype ?? "image/jpeg";
+          const mediaType = (
+            ALLOWED_IMAGE_MEDIA_TYPES.has(rawMimeType) ? rawMimeType : "image/jpeg"
+          ) as ImageMediaType;
+          await onMessage({
+            jid,
+            image: {
+              base64: buffer.toString("base64"),
+              mediaType,
+              caption: content.imageMessage.caption ?? undefined,
+            },
+          });
+          continue;
+        }
+
+        const text =
+          content.conversation ??
+          content.extendedTextMessage?.text ??
+          content.videoMessage?.caption;
+        if (!text) {
+          logger.info({ jid }, "Evento ignorado: mensagem sem texto (ex: figurinha, vídeo sem legenda).");
+          continue;
+        }
+
+        await onMessage({ jid, text });
       } catch (err) {
         logger.error(err, "Erro ao processar mensagem recebida.");
       }

@@ -24,6 +24,7 @@ export const config = {
     | "high"
     | "xhigh"
     | "max",
+  groqApiKey: process.env.GROQ_API_KEY,
   dataDir: process.env.DATA_DIR || "./data",
   logLevel: process.env.LOG_LEVEL || "info",
 };

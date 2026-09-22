@@ -32,6 +32,11 @@ const NO_RE = /^(não|nao|n|cancela|cancelar|para|pera|perai|peraí|espera|deixa
 const DONE_RE = /^(fiz|feito|consegui|pronto|bebi|treinei|sim|s|ok)[.!]?$/i;
 const NOT_DONE_RE = /^(não fiz|nao fiz|não|nao|n|pulei|não deu|nao deu|esqueci)[.!]?$/i;
 
+export interface ImageInput {
+  base64: string;
+  mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+}
+
 function buildContextBlock(): string {
   const nowStr = now().format("dddd, DD/MM/YYYY HH:mm");
   const reminders =
@@ -79,8 +84,22 @@ function pushHistory(entry: Anthropic.MessageParam): void {
   }
 }
 
-async function runAgentTurn(userText: string): Promise<string> {
-  pushHistory({ role: "user", content: userText });
+async function runAgentTurn(userText: string, image?: ImageInput): Promise<string> {
+  const content: Anthropic.MessageParam["content"] = image
+    ? [
+        {
+          type: "image",
+          source: { type: "base64", media_type: image.mediaType, data: image.base64 },
+        },
+        {
+          type: "text",
+          text:
+            userText ||
+            "O Dono mandou essa imagem sem legenda. Descreva o que reconhece e aja com contexto (ex: se for recibo/extrato/print financeiro, sugira ou registre o gasto); se não ficar claro o propósito, pergunte o que ele quer fazer com ela.",
+        },
+      ]
+    : userText;
+  pushHistory({ role: "user", content });
 
   const system: Anthropic.TextBlockParam[] = [
     { type: "text", text: buildSystemPrompt(), cache_control: { type: "ephemeral" } },
@@ -136,52 +155,57 @@ async function runAgentTurn(userText: string): Promise<string> {
   return finalText || "Feito.";
 }
 
-export async function handleOwnerMessage(text: string): Promise<string> {
+export async function handleOwnerMessage(text: string, image?: ImageInput): Promise<string> {
   const trimmed = text.trim();
-  const awaiting = getAwaitingActions();
 
-  // Fast path: exactly one pending confirmation and a clear yes/no reply -
-  // resolve deterministically without a model round-trip.
-  if (awaiting.length === 1) {
-    if (YES_RE.test(trimmed)) {
-      const result = await executeConfirmedAction(awaiting[0].id);
-      pushHistory({ role: "user", content: trimmed });
-      pushHistory({ role: "assistant", content: result });
-      return result;
-    }
-    if (NO_RE.test(trimmed)) {
-      await resolvePendingAction(awaiting[0].id, "cancelled");
-      const result = "Ok, cancelado.";
-      pushHistory({ role: "user", content: trimmed });
-      pushHistory({ role: "assistant", content: result });
-      return result;
-    }
-  }
+  // Atalhos determinísticos só fazem sentido pra texto puro — uma imagem
+  // sempre vai pro modelo, mesmo que venha com legenda "sim"/"fiz".
+  if (!image) {
+    const awaiting = getAwaitingActions();
 
-  // Fast path: exatamente um check-in de hábito aguardando resposta e uma
-  // réplica clara de fiz/não fiz - resolve direto, sem passar pelo modelo.
-  const awaitingCheckIns = getAwaitingCheckIns();
-  if (awaitingCheckIns.length === 1) {
-    const checkIn = awaitingCheckIns[0];
-    const habitName = getHabit(checkIn.habitId)?.name ?? "hábito";
-    if (DONE_RE.test(trimmed)) {
-      await resolveCheckIn(checkIn.id, "done");
-      const result = `Show, ${habitName} marcado como feito! 💪`;
-      pushHistory({ role: "user", content: trimmed });
-      pushHistory({ role: "assistant", content: result });
-      return result;
+    // Fast path: exactly one pending confirmation and a clear yes/no reply -
+    // resolve deterministically without a model round-trip.
+    if (awaiting.length === 1) {
+      if (YES_RE.test(trimmed)) {
+        const result = await executeConfirmedAction(awaiting[0].id);
+        pushHistory({ role: "user", content: trimmed });
+        pushHistory({ role: "assistant", content: result });
+        return result;
+      }
+      if (NO_RE.test(trimmed)) {
+        await resolvePendingAction(awaiting[0].id, "cancelled");
+        const result = "Ok, cancelado.";
+        pushHistory({ role: "user", content: trimmed });
+        pushHistory({ role: "assistant", content: result });
+        return result;
+      }
     }
-    if (NOT_DONE_RE.test(trimmed)) {
-      await resolveCheckIn(checkIn.id, "not_done");
-      const result = `Ok, marquei ${habitName} como não feito.`;
-      pushHistory({ role: "user", content: trimmed });
-      pushHistory({ role: "assistant", content: result });
-      return result;
+
+    // Fast path: exatamente um check-in de hábito aguardando resposta e uma
+    // réplica clara de fiz/não fiz - resolve direto, sem passar pelo modelo.
+    const awaitingCheckIns = getAwaitingCheckIns();
+    if (awaitingCheckIns.length === 1) {
+      const checkIn = awaitingCheckIns[0];
+      const habitName = getHabit(checkIn.habitId)?.name ?? "hábito";
+      if (DONE_RE.test(trimmed)) {
+        await resolveCheckIn(checkIn.id, "done");
+        const result = `Show, ${habitName} marcado como feito! 💪`;
+        pushHistory({ role: "user", content: trimmed });
+        pushHistory({ role: "assistant", content: result });
+        return result;
+      }
+      if (NOT_DONE_RE.test(trimmed)) {
+        await resolveCheckIn(checkIn.id, "not_done");
+        const result = `Ok, marquei ${habitName} como não feito.`;
+        pushHistory({ role: "user", content: trimmed });
+        pushHistory({ role: "assistant", content: result });
+        return result;
+      }
     }
   }
 
   try {
-    return await runAgentTurn(trimmed);
+    return await runAgentTurn(trimmed, image);
   } catch (err) {
     logger.error(err, "Erro ao processar mensagem com Claude.");
     return "Deu um erro aqui do meu lado processando isso. Tenta de novo?";
