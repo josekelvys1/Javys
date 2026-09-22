@@ -111,13 +111,32 @@ export async function startWhatsApp(onMessage: IncomingHandler): Promise<void> {
       "Evento messages.upsert recebido.",
     );
 
-    if (type !== "notify") {
-      logger.info({ type }, "Evento ignorado: type diferente de 'notify'.");
+    // O Baileys também entrega mensagens novas e legítimas com type "append"
+    // (não só "notify") — por exemplo em algumas reconexões ou quando a
+    // mensagem chega por um dispositivo vinculado. Descartar "append" fazia
+    // o Jarvis ignorar mensagens de teste reais. Para não reprocessar
+    // despejos de histórico antigo (que também podem vir como "append"),
+    // exigimos que a mensagem seja recente nesse caso.
+    if (type !== "notify" && type !== "append") {
+      logger.info({ type }, "Evento ignorado: type diferente de 'notify'/'append'.");
       return;
     }
 
     for (const msg of messages) {
       const jid = msg.key.remoteJid;
+
+      if (type === "append") {
+        const timestamp = Number(msg.messageTimestamp ?? 0);
+        const ageSeconds = Date.now() / 1000 - timestamp;
+        if (!Number.isFinite(ageSeconds) || ageSeconds > 60) {
+          logger.info(
+            { jid, ageSeconds },
+            "Evento ignorado: mensagem 'append' antiga (provável sincronização de histórico).",
+          );
+          continue;
+        }
+      }
+
       const content = normalizeMessageContent(msg.message);
 
       if (!content) {

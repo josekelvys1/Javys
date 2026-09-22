@@ -15,6 +15,7 @@ export const config = {
   timezone: process.env.TIMEZONE || "America/Sao_Paulo",
   morningBriefingTime: process.env.MORNING_BRIEFING_TIME || "07:00",
   reminderCheckIntervalMs: Number(process.env.REMINDER_CHECK_INTERVAL_MS || 30000),
+  habitCheckIntervalMs: Number(process.env.HABIT_CHECK_INTERVAL_MS || 60000),
   model: process.env.JARVIS_MODEL || "claude-opus-5",
   effort: (process.env.JARVIS_EFFORT || "medium") as
     | "low"

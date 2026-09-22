@@ -12,6 +12,10 @@ export function now() {
   return dayjs().tz(config.timezone);
 }
 
+export function fromISO(iso: string) {
+  return dayjs(iso).tz(config.timezone);
+}
+
 export function formatDateTime(iso: string): string {
   return dayjs(iso).tz(config.timezone).format("DD/MM/YYYY HH:mm");
 }

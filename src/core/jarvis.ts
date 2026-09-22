@@ -4,11 +4,22 @@ import { logger } from "../utils/logger.js";
 import { formatDateTime, now } from "../utils/time.js";
 import { listUpcomingAppointments } from "../modules/agenda/appointments.js";
 import { listPendingReminders } from "../modules/agenda/reminders.js";
+import { getAwaitingCheckIns, resolveCheckIn } from "../modules/habits/checkins.js";
+import { getHabit } from "../modules/habits/habits.js";
 import { getAwaitingActions, resolvePendingAction } from "./confirmations.js";
 import { buildSystemPrompt } from "./systemPrompt.js";
 import { executeConfirmedAction, executeTool, tools } from "./tools.js";
 
-const client = new Anthropic();
+// Quando não há ANTHROPIC_API_KEY, assumimos autenticação via
+// ANTHROPIC_AUTH_TOKEN (ex: token de `claude setup-token`, ligado à
+// assinatura Claude Pro/Max). Esse modo exige o header beta abaixo para o
+// backend tratar a requisição como autenticada por assinatura em vez de
+// chave de API paga.
+const client = new Anthropic(
+  process.env.ANTHROPIC_API_KEY
+    ? undefined
+    : { defaultHeaders: { "anthropic-beta": "oauth-2025-04-20" } },
+);
 
 const MAX_HISTORY_MESSAGES = 30;
 const MAX_TOOL_ITERATIONS = 6;
@@ -16,6 +27,9 @@ const history: Anthropic.MessageParam[] = [];
 
 const YES_RE = /^(sim|s|ok|confirmo|confirmado|confirma|pode mandar|manda|pode enviar|isso mesmo|correto)[.!]?$/i;
 const NO_RE = /^(não|nao|n|cancela|cancelar|para|pera|perai|peraí|espera|deixa)[.!]?$/i;
+
+const DONE_RE = /^(fiz|feito|consegui|pronto|bebi|treinei|sim|s|ok)[.!]?$/i;
+const NOT_DONE_RE = /^(não fiz|nao fiz|não|nao|n|pulei|não deu|nao deu|esqueci)[.!]?$/i;
 
 function buildContextBlock(): string {
   const nowStr = now().format("dddd, DD/MM/YYYY HH:mm");
@@ -34,6 +48,11 @@ function buildContextBlock(): string {
       .slice(0, 5)
       .map((a) => `- [${a.id}] ${a.description}`)
       .join("\n") || "Nenhuma.";
+  const awaitingCheckIns =
+    getAwaitingCheckIns()
+      .slice(0, 5)
+      .map((c) => `- [${c.id}] ${getHabit(c.habitId)?.name ?? "hábito desconhecido"}`)
+      .join("\n") || "Nenhum.";
 
   return `CONTEXTO ATUAL (uso interno, não repita isso cru para o Dono)
 Agora: ${nowStr} (${config.timezone})
@@ -42,7 +61,9 @@ ${reminders}
 Próximos compromissos:
 ${appointments}
 Ações aguardando confirmação:
-${pending}`;
+${pending}
+Hábitos aguardando check-in (fiz/não fiz):
+${awaitingCheckIns}`;
 }
 
 function pushHistory(entry: Anthropic.MessageParam): void {
@@ -125,6 +146,28 @@ export async function handleOwnerMessage(text: string): Promise<string> {
     if (NO_RE.test(trimmed)) {
       await resolvePendingAction(awaiting[0].id, "cancelled");
       const result = "Ok, cancelado.";
+      pushHistory({ role: "user", content: trimmed });
+      pushHistory({ role: "assistant", content: result });
+      return result;
+    }
+  }
+
+  // Fast path: exatamente um check-in de hábito aguardando resposta e uma
+  // réplica clara de fiz/não fiz - resolve direto, sem passar pelo modelo.
+  const awaitingCheckIns = getAwaitingCheckIns();
+  if (awaitingCheckIns.length === 1) {
+    const checkIn = awaitingCheckIns[0];
+    const habitName = getHabit(checkIn.habitId)?.name ?? "hábito";
+    if (DONE_RE.test(trimmed)) {
+      await resolveCheckIn(checkIn.id, "done");
+      const result = `Show, ${habitName} marcado como feito! 💪`;
+      pushHistory({ role: "user", content: trimmed });
+      pushHistory({ role: "assistant", content: result });
+      return result;
+    }
+    if (NOT_DONE_RE.test(trimmed)) {
+      await resolveCheckIn(checkIn.id, "not_done");
+      const result = `Ok, marquei ${habitName} como não feito.`;
       pushHistory({ role: "user", content: trimmed });
       pushHistory({ role: "assistant", content: result });
       return result;
